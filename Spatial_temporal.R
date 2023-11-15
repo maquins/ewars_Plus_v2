@@ -634,7 +634,7 @@ observeEvent(input$run_mod,
                  dist_padded<-str_pad(input$district_validation,side="left",width=3,pad=0)
                  shiny_obj_pth<-file.path(shiny_obj_Main_pth,paste0("District_",dist_padded))
                  
-                 model_final_ns<-readRDS(file.path(shiny_obj_pth,"Shiny_Objs.rds"))$model_final_ns
+                 model_final_rw<-readRDS(file.path(shiny_obj_pth,"Shiny_Objs.rds"))$model_final_rw
                  all_cv<-readRDS(file.path(shiny_obj_pth,"Shiny_Objs.rds"))$all_cv
                  y.PREDS<-readRDS(file.path(shiny_obj_pth,"Shiny_Objs.rds"))$y.PREDS
                  
@@ -676,11 +676,11 @@ observeEvent(input$run_mod,
                    dplyr::filter(!year>=new_model_Year_validation) |> 
                    dplyr::mutate(observed_cases=cases,
                                  observed_rate=(cases/pop)*1e5,
-                                 fitted=model_final_ns$summary.fitted.values$mean[idx_runin],
+                                 fitted=model_final_rw$summary.fitted.values$mean[idx_runin],
                                  fitted=(fitted/pop)*1e5,
-                                 fittedp25=model_final_ns$summary.fitted.values$`0.025quant`[idx_runin],
+                                 fittedp25=model_final_rw$summary.fitted.values$`0.025quant`[idx_runin],
                                  fittedp25=(fittedp25/pop)*1e5,
-                                 fittedp975=model_final_ns$summary.fitted.values$`0.975quant`[idx_runin],
+                                 fittedp975=model_final_rw$summary.fitted.values$`0.975quant`[idx_runin],
                                  fittedp975=(fittedp975/pop)*1e5,
                    ) %>% 
                    dplyr::left_join(for_endemic,by=c("district","year","week")) |> 
@@ -694,8 +694,28 @@ observeEvent(input$run_mod,
                  cat(paste("district is<<>>",district_validation),'\n')
                  
                  end.runin.year<-new_model_Year_validation-1
-                 date_week_runin<-seq.Date(as.Date(paste0(beg.year,'-01-01')),as.Date(paste0(end.runin.year,'-12-31')),by='week')[-1]
+                 #date_week_runin<-seq.Date(as.Date(paste0(beg.year,'-01-01')),as.Date(paste0(end.runin.year,'-12-31')),by='week')[-1]
+                 date_week_runin<-seq.Date(as.Date(paste0(beg.year,'-01-01')),as.Date(paste0(end.runin.year,'-12-31')),by='week')
                  
+                 
+                 data_Weeks_Runin<-data.frame(date=date_week_runin,
+                                              year_week=format.Date(date_week_runin,"%Y_%W"),
+                                              year=year(date_week_runin),
+                                              stringsAsFactors =F,
+                                              week=week(date_week_runin)) %>% 
+                   mutate(Week=str_split_fixed(year_week,pattern ='_',n=2)[,2]) %>% 
+                   dplyr::filter(as.numeric(Week)%in% 1:52)
+                 
+                 weeks.in.data_runin<-data_augmented %>% 
+                   dplyr::mutate(year_week=paste0(year,'-',str_pad(week,side ="left",pad =0,width =2))) 
+                 
+                 year_week_S_runin<-data_Weeks_Runin %>% dplyr::group_by(year,Week) %>% 
+                   dplyr::summarise(.groups="drop",date_Beg=min(date)) %>% 
+                   dplyr::mutate(year_week=format.Date(date_Beg,"%Y-%W"))%>% 
+                   dplyr::filter(year_week %in% weeks.in.data_runin$year_week)
+                 
+                 
+          
                  data_plot_Runin<-runin_dat
                  
                  data_plot_RuninB<-data_plot_Runin |> 
@@ -705,11 +725,11 @@ observeEvent(input$run_mod,
                    dplyr::rename(observed=observed_rate,
                                  threshold=threshold_rate)
                  
-                 data_use_Runin_xts<-xts(data_plot_RuninB,order.by =date_week_runin,
+                 data_use_Runin_xts<-xts(data_plot_RuninB,order.by =year_week_S_runin$date_Beg,
                                          frequency=7)
                  
                  data_plot_RuninB1<-data_plot_Runin |> 
-                   dplyr::mutate(date=date_week_runin) |> 
+                   dplyr::mutate(date=year_week_S_runin$date_Beg) |> 
                    dplyr::select(date,observed_rate,fitted,fittedp25,
                                  fittedp975,outbreak,
                                  threshold_rate,observed_alarm)|> 

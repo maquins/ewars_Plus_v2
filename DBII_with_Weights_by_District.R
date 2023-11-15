@@ -1,7 +1,7 @@
 
 
-out_Path<-file.path(getwd(),'Outputs')
 
+out_Path<-file.path(getwd(),'Outputs')
 
 
 #folder_Vars<-c("path_dic1","path_dic2","cv_path","shiny_obj_pth")
@@ -10,7 +10,7 @@ shinyDBII_obj_Main_pth<-file.path(out_Path,"For_Shiny_DBII")
 all_files_Path<-file.path(out_Path,"For_Shiny","All_district")
 pred_weights_Main_pth<-file.path(out_Path,"Prediction_weights")
 
-
+#list.dirs(shiny_obj_Main_pth)
 ## Run by district
 
 
@@ -27,7 +27,7 @@ cat(all_districts_pros,sep='\n')
 #require(input$district_new)
 
 run_Pros_pred<-T
-
+#DD<-1
 if(run_Pros_pred){
   
   Time_pred_one_Dist<-system.time({
@@ -48,9 +48,12 @@ if(run_Pros_pred){
       
       ## read in var splines
       
-      knots_Vars_pros<-readRDS(file.path(shiny_obj_pth,"Shiny_Objs.rds"))$knots_Vars
-      selected_zvalue_pros<-readRDS(file.path(shiny_obj_pth,"Shiny_Objs.rds"))$selected_zvalue
-      Selected_out_threshold<-as.numeric(readRDS(file.path(shiny_obj_pth,"Shiny_Objs.rds"))$zvalue_sel_Ordered[1,"Cutoff"])
+      Inlagrp_Vars_pros<-readRDS(file.path(shiny_obj_pth,"Shiny_Objs.rds"))$Inlagrp_Vars
+      selected_zvalue_pros0<-readRDS(file.path(shiny_obj_pth,"Shiny_Objs.rds"))$selected_zvalue
+      Selected_out_threshold0<-as.numeric(readRDS(file.path(shiny_obj_pth,"Shiny_Objs.rds"))$zvalue_sel_Ordered[1,"Cutoff"])
+      
+      selected_zvalue_pros<-ifelse(is.na(selected_zvalue_pros0),1.2,selected_zvalue_pros0)
+      Selected_out_threshold<-ifelse(is.na(Selected_out_threshold0),0.1,Selected_out_threshold0)
       
       alarm_vars_pros<-readRDS(file.path(shiny_obj_pth,"Shiny_Objs.rds"))$alarm_vars
       
@@ -59,7 +62,7 @@ if(run_Pros_pred){
       Computed_pred_Distance<-floor(mean(as.numeric(unlist(str_extract_all(Selected_lag_Vars_pros,"[:number:]+")))))
       
       
-      df_spline_pros<-readRDS(file.path(shiny_obj_pth,"Shiny_Objs.rds"))$df_spline
+      Inla_grp_Nsize_pros<-readRDS(file.path(shiny_obj_pth,"Shiny_Objs.rds"))$Inla_grp_Nsize
       
       
       for_endemic_pros<-readRDS(file.path(all_files_Path,"Shiny_Objs_all.rds"))$all_endemic |> 
@@ -70,7 +73,7 @@ if(run_Pros_pred){
       ## read in prediction weights
       
       work_CV_Weight_pros<-readRDS(file.path(pred_weights_pth,"Pred_weights_meta.rds"))$work_CV_Weight
-      ns_names_pros<-readRDS(file.path(pred_weights_pth,"Pred_weights_meta.rds"))$ns_names
+      inla_grp_Names_pros<-readRDS(file.path(pred_weights_pth,"Pred_weights_meta.rds"))$inla_grp_Names
       
       last_Dat_Year<-unique(work_CV_Weight_pros$year)
       
@@ -85,64 +88,71 @@ if(run_Pros_pred){
         dplyr::mutate(mn_pref=str_pad(seq,pad=0,side='left',width=2),
                       pred_obj=file.path(pred_weights_pth,paste0('Pred_weights_',last_Dat_Year,'_',mn_pref,'.rds')))
       
-      
-      
-      
       #dim(pred_weights_pros)
-      
-      
       ## generate predictions for supplied data
+      ## Identify inla_Group position
       
+      vars_For_inla_grp<-str_split_fixed(Selected_lag_Vars_pros,"_",2)[,1]
       
+      #vv<-2
       
-      
-      
-      ## compute the splines
-      
-      vars_For_Spline<-str_split_fixed(Selected_lag_Vars_pros,"_",2)[,1]
-      
-      vv<-2
-      
-      for (vv in 1:length(vars_For_Spline)){
+      for (vv in 1:length(vars_For_inla_grp)){
         
-        knots_S<-as.numeric(unlist(knots_Vars_pros[paste0("Var",vv,"_knots")]))
-        bound_knots_S<-as.numeric(unlist(knots_Vars_pros[paste0("Var",vv,"_Boundary_knots")]))
+        Inlagrp_Int_dat<-Inlagrp_Vars_pros[[vv]] |> 
+          dplyr::mutate(intval=str_remove_all(Interval,'[)()]|\\[|\\]'),
+                        int_beg=as.numeric(str_split(intval,pattern=',',n=2,simplify=T)[,1]),
+                        int_end=as.numeric(str_split(intval,pattern=',',n=2,simplify=T)[,2]))
         
-        Spline_obj_Name_pros<-paste0('Var',vv,'_Spline')
+       
+        grp_obj_Name_pros<-paste0('Var',vv,'_inla_grp')
         
-        Var_ns_pref_pros<-paste0('Var',vv)
+        Var_grp_pref_pros<-paste0('Var',vv)
         
-        class(Prospective_Data[,vars_For_Spline[vv]])
+        ##find interval where the variables lie
         
-        Var_Sp_pros<-splines::ns(Prospective_Data[,vars_For_Spline[vv]],df=df_spline_pros,
-                                 knots =knots_S,
-                                 Boundary.knots =bound_knots_S)
+        Vars_Find<-Prospective_Data[,vars_For_inla_grp[vv]]
         
-        colnames(Var_Sp_pros)<-paste0(Var_ns_pref_pros,1:df_spline_pros)
+        #findInterval(Vars_Find,Inlagrp_Int_dat$int_beg)
+        Size.grp<-nrow(Inlagrp_Int_dat)
         
-        assign(Spline_obj_Name_pros,
-               Var_Sp_pros)
+        #Matrix_wgts<-matrix(NA,length(Vars_Find),Inla_grp_Nsize_pros)
+        Matrix_wgts<-matrix(NA,length(Vars_Find),Size.grp)
+        
+        
+        for(ww in 1:length(Vars_Find)){
+          int_found0<-findInterval(Vars_Find[ww],c(Inlagrp_Int_dat$int_beg))
+          int_found<-ifelse(int_found0==0,1,int_found0)
+          
+          Matrix_wgts[ww,]<-as.numeric(1:Size.grp==int_found)
+        }
+        padded_grp_N<-str_pad(1:Inla_grp_Nsize_pros,pad=0,side ='left',width =2)
+        
+  
+        colnames(Matrix_wgts)<-paste0(Var_grp_pref_pros,'_Inla_group_',padded_grp_N)
+        
+        assign(grp_obj_Name_pros,
+               Matrix_wgts)
         
       }
       
       
       ## Compute the predictions here
       
-      ns_Names_string<-paste0(ns_names_pros,collapse=',')
+      rw_Names_string<-paste0(inla_grp_Names_pros,collapse=',')
       
-      names_Select_pred<-c("a","coefspat","week",ns_names_pros,"pop_offset")
+      names_Select_pred<-c("a","coefspat","week",inla_grp_Names_pros,"pop_offset")
       
       #Var1_Spline
       
-      Objects_Cbind<-c("Prospective_Data",paste0("Var",1:length(alarm_vars),"_Spline"))
+      Objects_Cbind<-c("Prospective_Data",paste0("Var",1:length(vars_For_inla_grp),"_inla_grp"))
       
-      Prospective_Data_with_Splines<-foreach(aa=1:length(Objects_Cbind),.combine =cbind)%do% get(Objects_Cbind[aa])
+      Prospective_Data_with_inla_grp<-foreach(aa=1:length(Objects_Cbind),.combine =cbind)%do% get(Objects_Cbind[aa])
       
       #ProsDat.In<-Prospective_Data_with_Splines
       
       
       #get_Pros_preds<-function(dd,Dat.In,End.Dat){
-      Pred_NSize<-nrow(Prospective_Data_with_Splines)
+      Pred_NSize<-nrow(Prospective_Data_with_inla_grp)
       
       all_Pros_Predictions_ls<-vector("list",Pred_NSize)
       
@@ -157,27 +167,27 @@ if(run_Pros_pred){
         
         cat(paste0(dd," "),sep=',')
         
-        # Prospective_Data_with_Splines_sub<-Dat.In[dd,]
-        # End_mic<-End.Dat
+        # dd<-1
+
         
-        Prospective_Data_with_Splines_sub<-Prospective_Data_with_Splines[dd,]
+        Prospective_Data_with_inla_grp_sub<-Prospective_Data_with_inla_grp[dd,]
         
         
         
-        cov_matrix_Pred<-Prospective_Data_with_Splines[dd,]|> 
+        cov_matrix_Pred<-Prospective_Data_with_inla_grp[dd,]|> 
           dplyr::mutate(a=1,coefspat=1,week=1) |>
           dplyr::select(all_of(names_Select_pred)) |> 
           as.matrix()
         
         pred_week_Objs_sub<-pred_week_Objs |> 
-          dplyr::filter(week==Prospective_Data_with_Splines_sub$week)
+          dplyr::filter(week==Prospective_Data_with_inla_grp_sub$week)
         
         #?replicate
         covar_Matrix_pro_1000<-replicate(1000,cov_matrix_Pred,simplify="matrix")
         
         dim(covar_Matrix_pro_1000)
         
-        Week_pred_weights<-readRDS(pred_week_Objs_sub$pred_obj)$pred_weights[Prospective_Data_with_Splines_sub$week,,]
+        Week_pred_weights<-readRDS(pred_week_Objs_sub$pred_obj)$pred_weights[Prospective_Data_with_inla_grp_sub$week,,]
         
         Size_cv_Mod<-readRDS(pred_week_Objs_sub$pred_obj)$ns_size
         
@@ -197,11 +207,11 @@ if(run_Pros_pred){
         
         #summary(ypred_NB_1000)
         
-        ypred_NB_1000_rate<-(ypred_NB_1000/Prospective_Data_with_Splines_sub$population)*1e5
+        ypred_NB_1000_rate<-(ypred_NB_1000/Prospective_Data_with_inla_grp_sub$population)*1e5
         
         #End.Dat=endemic_channel_Use
         
-        idx.end<-which(endemic_channel_Use$week==Prospective_Data_with_Splines_sub$week)
+        idx.end<-which(endemic_channel_Use$week==Prospective_Data_with_inla_grp_sub$week)
         
         #cat(paste0('week:: ',Prospective_Data_with_Splines_sub$week),sep='\n')
         #cat(paste0('rows End.Dat ..',nrow(End_mic)),sep='\n')
@@ -218,7 +228,7 @@ if(run_Pros_pred){
         
         #names(Prospective_Data_with_Splines_sub)
         
-        all_Pros_Predictions_ls[[dd]]<-Prospective_Data_with_Splines_sub |> 
+        all_Pros_Predictions_ls[[dd]]<-Prospective_Data_with_inla_grp_sub |> 
           dplyr::select(all_of(vars_pro_Base_select)) |> 
           dplyr::mutate(
             predicted_cases = mean(ypred_NB_1000,na.rm=T), 
@@ -262,8 +272,8 @@ if(run_Pros_pred){
       rm(all_Pros_Predictions_ls)
       gc()
       
-      year_pred<-unique(Prospective_Data_with_Splines$year)
-      first_week_Pred<-min(Prospective_Data_with_Splines$week)
+      year_pred<-unique(Prospective_Data_with_inla_grp$year)
+      first_week_Pred<-min(Prospective_Data_with_inla_grp$week)
       alarm_thresh<-unique(all_Pros_Predictions$alarm_threshold)
       
       
@@ -504,7 +514,7 @@ if(run_Pros_pred){
               strip.background =element_rect(fill="#CCBB44"),
               axis.line.x =element_line(linetype=1,
                                         colour="grey",
-                                        size=0.4,
+                                        linewidth=0.4,
                                         lineend="butt"),
               axis.text.x.bottom =element_text(angle =90,size=14,vjust=0.5),
               axis.title.y =element_blank(),

@@ -168,7 +168,7 @@ all_districts<-unique(data_augmented$district)
 DIC1_run<-T
 DIC2_run<-T
 CV_run<-T
-
+Weight_save<-T
 
 
 out_Path<-file.path(getwd(),'Outputs')
@@ -255,7 +255,7 @@ Time_one_Dist<-system.time({
     theta_beg<-baseline_model$internal.summary.hyperpar
     
     
-    Sel_Vars<-function(form_mod,mod_Family,mod.Data,start_again) {
+    Sel_Vars<-function(form_mod,mod_Family,mod.Data,Theta_Start,start_again) {
       
       mod<-inla(form_mod,
                 offset =log_Pop,
@@ -273,7 +273,7 @@ Time_one_Dist<-system.time({
                                        smtp="taucs"
                 ),
                 num.threads="2:1",
-                control.mode = list(theta = theta_beg$mean, restart = start_again),
+                control.mode = list(theta = Theta_Start, restart = start_again),
                 control.predictor = list(link = 1, compute = TRUE), 
                 verbose = F)
       mod
@@ -329,7 +329,7 @@ Time_one_Dist<-system.time({
           form_str <- as.formula(paste("Cases ~ 1 +f(ID_spat,model='iid',replicate=ID_year)+f(week,model='rw1',cyclic=T,scale.model =T)+",
                                        lag.vars[ss],collapse =""))
           
-          model_Out<-Sel_Vars(form_str,"nbinomial",Dat_mod_sub,T)
+          model_Out<-Sel_Vars(form_str,"nbinomial",Dat_mod_sub,Theta_Start=theta_beg$mean,T)
           summary(model_Out)
           
           Dic_tab<-data.frame(var=lag.vars[ss],DIC=model_Out$dic$dic,
@@ -436,7 +436,7 @@ Time_one_Dist<-system.time({
             
             ## select suitable lags based on  CV for 2019
             
-            model_Out<-Sel_Vars(form_str,"nbinomial",Dat_mod_sub,T)
+            model_Out<-Sel_Vars(form_str,"nbinomial",Dat_mod_sub,theta_beg$mean, T)
             summary(model_Out)
             
             Dic_tab<-data.frame(Lag_Comb=comb_str,
@@ -496,93 +496,123 @@ Time_one_Dist<-system.time({
     
     df_spline<-4
     
-    ns_test<-list(Dat_mod_Selected=Dat_mod_Selected,
-                   Selected_lag_Vars=Selected_lag_Vars)
+    # ns_test<-list(Dat_mod_Selected=Dat_mod_Selected,
+    #                Selected_lag_Vars=Selected_lag_Vars)
     cat("",sep='\n')
+    
+    Var_inla_Grps_ls<-vector(mode ='list',length =length(alarm_vars))
+    
+    Inla_grp_Nsize<-10
     
     for (gg in 1:length(alarm_vars)){
       
-      Spline_obj_Name<-paste0('Var',gg,'_Spline')
+      Inla_grp_Var_Obj<-paste0('Var',gg,'_Inla_group')
       
       Var_ns_pref<-paste0('Var',gg)
       
       Var_Cre_bs1<-Dat_mod_Selected[,Selected_lag_Vars[gg]]
-      #sd(Var_Cre_bs1,na.rm = T)
-      pctn_99<-quantile(Var_Cre_bs1,0.99,na.rm=T)
-      max_Val<-max(Var_Cre_bs1,na.rm=T)
-      
-      outlier_ratio<-max_Val/pctn_99
-      
-      if(str_detect(Selected_lag_Vars[gg],'rain|prec') & outlier_ratio>2){
-        Var_Cre_bs<-Var_Cre_bs1
-        Var_Cre_bs[which(Var_Cre_bs1>pctn_99)]<-NA
-      }else{
-        Var_Cre_bs<-Var_Cre_bs1
-      }
       
       
-      knots_Equi<-dlnm::equalknots(Var_Cre_bs,3)
+      inla_grp_Var<-data.frame(var=inla.group(Var_Cre_bs1,n=Inla_grp_Nsize,method ="quantile"))
       
-      #Var_Sp<-splines::ns(Var_Cre_bs,df=df_spline)
-      Var_Sp<-splines::ns(Var_Cre_bs,knots =knots_Equi)
+      names(inla_grp_Var)<-Inla_grp_Var_Obj
       
-      
-      colnames(Var_Sp)<-paste0(Var_ns_pref,1:df_spline)
-      
-      assign(Spline_obj_Name,
-             Var_Sp)
-      
+      Var_inla_Grps_ls[[gg]]<-inla_grp_Var
       
     }
+    
+    Comb_Var_inla_Grps<-do.call(cbind,Var_inla_Grps_ls)
+    
+    #unique(Comb_Var_inla_Grps$Var1_Inla_group)
     
     pp<-1
     
-    knot_save<-function(pp){
+    Inla_group_save<-function(pp){
       
-      Spline.obj<-get(paste0('Var',pp,'_Spline'))
-      kn_out<-list(Knots=attr(Spline.obj,"knots"),
-           Boundary.knots=attr(Spline.obj,"Boundary.knots"))
+      Inla_grp_Var_Obj<-paste0('Var',pp,'_Inla_group')
       
-      names(kn_out)<-paste0('Var',pp,c("_knots","_Boundary_knots"))
+      Var_Cre_bs1<-Dat_mod_Selected[,Selected_lag_Vars[gg]]
+      
+      probs_p<-c(0, ppoints(Inla_grp_Nsize -1), 1)
+      
+      aq<-unique(quantile(Var_Cre_bs1,probs_p,na.rm=T ))
+      
+      a_cuts <- cut(Var_Cre_bs1, breaks = as.numeric(aq), include.lowest = TRUE)
+      
+      inla_grp_Var<-data.frame(inla_var=inla.group(Var_Cre_bs1,n=Inla_grp_Nsize,method ="quantile"))
+      
+      
+      inla_grp_Var1<-inla_grp_Var |> 
+        dplyr::mutate(Interval=a_cuts) |> 
+        dplyr::filter(!is.na(inla_var)) |> 
+        unique() |> 
+        dplyr::arrange(inla_var)
+      
+      names(inla_grp_Var1)[1]<-Inla_grp_Var_Obj
+      
+      kn_out<-list(inla_var_Intervals=inla_grp_Var1)
+      
+      names(kn_out)<-paste0('Var',pp,"_Inla_group_Intervals")
       kn_out
       
+      
+      
     }
-  
-    knots_Vars<-foreach(aa=1:length(alarm_vars),.combine =c)%do% knot_save(aa)
     
-    spline_vars<-paste0('Var',1:length(alarm_vars),'_Spline')
+    Inlagrp_Vars<-foreach(aa=1:length(alarm_vars),.combine =c)%do% Inla_group_save(aa)
     
-    #Select_Lag_Comb<-paste(Selected_lags$var,collapse ="+")
+    
+    ##create the model formula
+    
+    Inla_RW_vars<-paste0('Var',1:length(alarm_vars),'_Inla_group')
+    
     Select_Lag_Comb<-paste(Selected_lag_Vars,collapse ="+")
     
     
-    
-    Select_Lag_Comb_ns<-paste(spline_vars,collapse ="+")
-    
+    Select_Lag_Comb_rw<-paste("f(",Inla_RW_vars,",model='rw2')",collapse ="+")
     
     selected_Model_form <- as.formula(paste("Cases ~ 1 +f(ID_spat,model='iid',replicate=ID_year)+f(week,model='rw1'
                                         ,cyclic=T,scale.model =T)+",Select_Lag_Comb,collapse =""))
     
-    selected_Model_form_ns <- as.formula(paste("Cases ~ 1 +f(ID_spat,model='iid',replicate=ID_year)+f(week,model='rw1'
-                                           ,cyclic=T,scale.model =T)+",Select_Lag_Comb_ns,collapse =""))
+    
+    selected_Model_form_rw <- as.formula(paste("Cases ~ 1 +f(ID_spat,model='iid',replicate=ID_year)+f(week,model='rw1'
+                                           ,cyclic=T,scale.model =T)+",Select_Lag_Comb_rw,collapse =""))
     
     
     
-    model_final_Lin<-Sel_Vars(selected_Model_form,"nbinomial",Dat_mod_Selected,T)
-    model_final_ns<-Sel_Vars(selected_Model_form_ns,"nbinomial",Dat_mod_Selected,T)
+    Dat_mod_Selected_with_Inla_groups<-cbind(Dat_mod_Selected,Comb_Var_inla_Grps)
     
+    model_final_Lin<-get_Model(selected_Model_form,"nbinomial",Dat_mod_Selected)
+    model_final_rw<-get_Model(selected_Model_form_rw,"nbinomial",Dat_mod_Selected_with_Inla_groups)
+    
+    summary(model_final_rw)
+    summary(model_final_Lin)
+    
+    #model_final_rw$summary.random$Var1_Inla_group
+    
+    theta_beg_Rw<-model_final_rw$internal.summary.hyperpar$mean
+    
+    plot(model_final_rw$summary.random$Var1_Inla_group$mean,type='l')
+    
+    plot(model_final_rw$summary.random$Var2_Inla_group$mean,type='l')
+    
+    summary(Dat_mod_Selected$rainsum_LAG10)
+    
+    summary(model_final_rw$summary.fitted.values$mean)
+    
+    
+    ## run csv 
     
     summary(model_final_Lin)
     
-    summary(model_final_ns)
+    summary(model_final_rw)
     
     
     sort(c(DIC_lin=model_final_Lin$dic$dic,
-           DIC_ns=model_final_ns$dic$dic))
+           DIC_rw=model_final_rw$dic$dic))
     
     sort(c(WAIC_lin=model_final_Lin$waic$waic,
-           WAIC_ns=model_final_ns$waic$waic))
-    
+           WAIC_rw=model_final_rw$waic$waic))
     
     ## perform the weekly CV /test Yearly
     
@@ -678,7 +708,7 @@ Time_one_Dist<-system.time({
           
           week_Sub<-work_CV$beg_week[cc]:work_CV$end_week[cc]
           
-          CV_data<-Dat_mod_Selected |> 
+          CV_data<-Dat_mod_Selected_with_Inla_groups |> 
             dplyr::mutate(Cases=case_when((year==work_CV$year[cc] & week %in% week_Sub)~NA,
                                           TRUE~Cases
             ))
@@ -692,7 +722,7 @@ Time_one_Dist<-system.time({
           
           
           
-          model_CV<-Sel_Vars(selected_Model_form_ns,"nbinomial",CV_data,T)
+          model_CV<-Sel_Vars(selected_Model_form_rw,"nbinomial",CV_data,theta_beg_Rw,T)
           
           #cat(paste0('model_CV exists::',exists("model_CV")),sep='\n')
           
@@ -701,22 +731,6 @@ Time_one_Dist<-system.time({
           Nsamples<-1000
           
           xx <- inla.posterior.sample(Nsamples,model_CV,num.threads ="1:1")
-          #xx <- inla.posterior.sample(Nsamples,model_CV,seed =2314557716)
-          #cat(paste0('cv_idx exists::',exists("cv_idx")),sep='\n')
-          
-          
-          
-          #xx.s <- inla.posterior.sample.eval(function(...) c(theta[1], Predictor[cv_idx]), xx)
-          #xx.s <- inla.posterior.sample.eval(function(...) c(theta[1],theta[2], Predictor[idx.pred]), xx)
-          # list_sample<-list(xx=xx,
-          #                   model_CV=model_CV,
-          #                   Nsamples=Nsamples,
-          #                   cv_idx=cv_idx,
-          #                   CV_data=CV_data)
-          # path_test<-"/media/sewe/Sewe_Nvme_Data/Projects/Ewars_Plus_2023_v2/test_Objs"
-          # fname_test<-file.path(path_test,"inla_sample_test.rds")
-          # 
-          # saveRDS(list_sample,fname_test,compress=T)
           
           xx.size<-inla.posterior.sample.eval(function(...) c(theta[1]), xx)
           xx.s<-inla.posterior.sample.eval(function(...) c(Predictor), xx)[cv_idx,]
@@ -734,11 +748,6 @@ Time_one_Dist<-system.time({
             xx.size.sample<-xx.size[s.idx]
             #cat(xx.sample,sep='\n')
             y.pred[, s.idx] <- rnbinom(mpred, mu = exp(xx.sample), size = xx.size.sample)
-            #y.pred[, s.idx] <- rnbinom(mpred, mu = (xx.sample[-1]), size = xx.sample[1])
-            #y.pred[, s.idx] <- rpois(mpred, lambda = exp(xx.sample[-1]))
-            #y.pred[, s.idx] <-  VGAM::rzipois(mpred, lambda = exp(xx.sample[-1]),pstr0 =xx.sample[1])
-            
-            
           }
           
           
@@ -846,8 +855,8 @@ Time_one_Dist<-system.time({
                       ymax=pred_rate_Upper,
                       fill="CI"),
                   alpha=0.8)+
-      geom_line(aes(col="Observed"),lwd=1.2)+
-      geom_line(aes(y=pred_rate,col="Predicted"),lwd=1.2)+
+      geom_line(aes(col="Observed"),linewidth=1.2)+
+      geom_line(aes(y=pred_rate,col="Predicted"),linewidth=1.2)+
       
       #geom_line(aes(x=date,y=pred_rate_lower),col='red')+
       #geom_line(aes(x=date,y=pred_rate_Upper),col='red')+
@@ -908,7 +917,7 @@ Time_one_Dist<-system.time({
     
     ggplot(aes(x=date,y=Rate),data=Intervals_Comp)+
       
-      geom_line(aes(col=Cat),lwd=1.2)+
+      geom_line(aes(col=Cat),linewidth=1.2)+
       
       scale_x_date(date_breaks = "1 months",
                    labels=function(x) format.Date(x,"%b %Y"))+
@@ -965,9 +974,12 @@ Time_one_Dist<-system.time({
     #           predictor=probs_Exceed_01$exceed_prob,
     #           important="se")
     # 
-    suppressMessages(suppressWarnings(reportROC(gold=probs_Exceed_04$Outbreak,
-              predictor=probs_Exceed_04$exceed_prob,
-              important="se")))
+   
+    
+    suppressMessages(suppressWarnings(try(reportROC(gold=probs_Exceed_04$Outbreak,
+                                                     predictor=probs_Exceed_04$exceed_prob,
+                                                     important="se"),
+                                           outFile =warning("ROC_error_pred_04.txt"))))
 
     # reportROC(gold=probs_Exceed_13$Outbreak,
     #           predictor=probs_Exceed_13$exceed_prob,
@@ -1004,13 +1016,14 @@ Time_one_Dist<-system.time({
       probs_Exceed<-Combined_sensitivy |> 
         dplyr::group_by(year,week,week_Interval) |> 
         dplyr::summarise(.groups ="drop",
-                         Outbreak=mean(Outbreak),
+                         Outbreak=mean(Outbreak,na.rm=T),
                          total=n(),
-                         total_Exceed=sum(exceed),
-                         exceed_prob=mean(exceed))
+                         total_Exceed=sum(exceed,na.rm=T),
+                         exceed_prob=mean(exceed,na.rm=T))
       
       probs_Exceed_Sub<-probs_Exceed |> 
-        dplyr::filter(week_Interval=="04")
+        dplyr::filter(week_Interval=="04") |> 
+        dplyr::filter(!is.na(Outbreak))
       
     
       #probs_Exceed_13$exceed_prob
@@ -1454,11 +1467,11 @@ Time_one_Dist<-system.time({
     
     #plot SIR
     
-    #model_final_ns
+    #model_final_rw
     
     SIR_dat<-data_augmented[,base_vars] %>% 
       dplyr::filter(district==District_Now) |> 
-      mutate(Fitted_cases=model_final_ns$summary.fitted.values$mean,
+      mutate(Fitted_cases=model_final_rw$summary.fitted.values$mean,
              year_week=paste0(year,'_',str_pad(week,side ="left",pad =0,width =2)))%>% 
       dplyr::select(district,year_week,Fitted_cases)
     
@@ -1500,7 +1513,7 @@ Time_one_Dist<-system.time({
     #district_seas<-Shiny_Input$district_seas
     
     weekly_effects <- data.table(cbind(rep(District_Now, each = 52),
-                                       model_final_ns$summary.random$week))
+                                       model_final_rw$summary.random$week))
     names(weekly_effects)[1:2] <- c("district", "Week")
     
     weekly_effects_check<-weekly_effects
@@ -1664,6 +1677,8 @@ Time_one_Dist<-system.time({
                              vars_Base=vars_Base,
                              Model_data_lags=Model_data_lags,
                              Dat_mod=Dat_mod,
+                             Dat_mod_Selected=Dat_mod_Selected,
+                             Dat_mod_Selected_with_Inla_groups=Dat_mod_Selected_with_Inla_groups,
                              Dat_mod_sub=Dat_mod_sub,
                              Model_data_lags_sub=Model_data_lags_sub,
                              form_baseline=form_baseline,
@@ -1687,16 +1702,19 @@ Time_one_Dist<-system.time({
                              Lag_combinations_dic=Lag_combinations_dic,
                              Lag_combinations_dic1=Lag_combinations_dic1,
                              Selected_lag_Vars=Selected_lag_Vars,
-                             knots_Vars=knots_Vars,
+                             Comb_Var_inla_Grps=Comb_Var_inla_Grps,
+                             Inlagrp_Vars=Inlagrp_Vars,
+                             Inla_RW_vars=Inla_RW_vars,
+                             #knots_Vars=knots_Vars,
                              vars_Base1=vars_Base1,
                              Vars_Final=Vars_Final,
-                             Dat_mod_Selected=Dat_mod_Selected,
+                             #Dat_mod_Selected=Dat_mod_Selected,
                              Select_Lag_Comb=Select_Lag_Comb,
-                             Select_Lag_Comb_ns=Select_Lag_Comb_ns,
+                             Select_Lag_Comb_rw=Select_Lag_Comb_rw,
                              selected_Model_form=selected_Model_form,
-                             selected_Model_form_ns=selected_Model_form_ns,
+                             selected_Model_form_rw=selected_Model_form_rw,
                              model_final_Lin=model_final_Lin,
-                             model_final_ns=model_final_ns,
+                             model_final_rw=model_final_rw,
                              work_CV=work_CV,
                              time_CV=tim_CV,
                              all_files_Cv=all_files_Cv,
@@ -1732,7 +1750,12 @@ Time_one_Dist<-system.time({
                              pop.var.dat=pop.var.dat,
                              other_alarm_indicators=other_alarm_indicators,
                              number_of_cases=number_of_cases,
-                             new_model_Year_validation=new_model_Year_validation)
+                             new_model_Year_validation=new_model_Year_validation,
+                             weeks.in.data=weeks.in.data,
+                             year_week_S=year_week_S,
+                             wide_for_dygraph=wide_for_dygraph,
+                             Inla_grp_Nsize=Inla_grp_Nsize,
+                             theta_beg_Rw=theta_beg_Rw)
     
     file_name_save<-file.path(shiny_obj_pth,"Shiny_Objs.rds")
     saveRDS(district_Objs_save,file_name_save,compress =T)
@@ -1785,10 +1808,11 @@ Time_one_Dist[3]/60
                            vars_Base1=vars_Base1,
                            Vars_Final=Vars_Final,
                            Dat_mod_Selected=Dat_mod_Selected,
+                           Dat_mod_Selected_with_Inla_groups=Dat_mod_Selected_with_Inla_groups,
                            #Select_Lag_Comb=Select_Lag_Comb,
                            #Select_Lag_Comb_ns=Select_Lag_Comb_ns,
                            selected_Model_form=selected_Model_form,
-                           selected_Model_form_ns=selected_Model_form_ns,
+                           selected_Model_form_rw=selected_Model_form_rw,
                            #model_final_Lin=model_final_Lin,
                            #model_final_ns=model_final_ns,
                            #work_CV=work_CV,

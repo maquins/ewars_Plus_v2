@@ -1,18 +1,5 @@
-
-
-
-
-
 work_CV_Weight<-get_CV_work(4)
 
-
-#spline_vars<-paste0('Var',1:2,'_Spline')
-
-
-ns_names<-foreach(aa=1:length(spline_vars),.combine =c)%do% colnames(get(spline_vars[aa]))
-
-
-Weight_save<-T
 Save_weights<-Weight_save
 
 
@@ -20,30 +7,29 @@ if(Save_weights){
   
   time_pred_Weight<-system.time({
   
-    #cc<-1
+    #gg<-1
     Header_progress<-paste0("generating pred weights for district:",District_Now,' ',one_of_dist_str)
     p_progress <- Progress$new(min=0,max=nrow(work_CV_Weight))
     p_progress$set(message =Header_progress ,value=0)
     
     cat("",sep='\n')
+    
     cat("generating Model weights ..,",sep='\n')
     
     for (gg in 1:nrow(work_CV_Weight)){
       
-      #cat(gg,sep='\n')
-      #cat(gg,sep='\n')
       cat(paste0(gg," "),sep=',')
       
       week_Sub<-work_CV_Weight$beg_week[gg]:work_CV_Weight$end_week[gg]
       
-      CV_data_Wt<-Dat_mod_Selected |> 
+      CV_data_Wt<-Dat_mod_Selected_with_Inla_groups |> 
         dplyr::mutate(Cases=case_when((year==work_CV_Weight$year[gg] & week %in% week_Sub)~NA,
                                       TRUE~Cases
         ))
       
       cv_idx<-with(CV_data_Wt,which(year==work_CV_Weight$year[gg] & week%in% week_Sub))
       
-      model_CV<-Sel_Vars(selected_Model_form_ns,"nbinomial",CV_data,T)
+      model_CV<-Sel_Vars(selected_Model_form_rw,"nbinomial",CV_data_Wt,theta_beg_Rw,T)
       
       #summary(model_CV)
       
@@ -69,11 +55,27 @@ if(Save_weights){
       
       idx_Int<-which(str_detect(rownames(ID_spat_1000_One),"Intercept"))
       
-      for(ii in 1:length(ns_names)){
+      inla_grp_Names1<-str_extract(rownames(ID_spat_1000_One),'Var[:number:]+_Inla_group:[:number:]+')
+      inla_grp_Names2<-inla_grp_Names1[complete.cases(inla_grp_Names1)]
+      grp_Num<-str_pad(str_remove(str_extract(inla_grp_Names2,':[:number:]+'),':'),width =2,pad=0,side='left')
+      idx_Group_all<-which(complete.cases(inla_grp_Names1))
+      
+      inla_grp_Names<-str_replace(inla_grp_Names2,':[:number:]+',paste0('_',grp_Num))
+      
+      cat(paste0("InlaGrp_name:"),sep ='\n')
+      cat(inla_grp_Names)
+      cat("",sep ='\n')
+      
+      rownames(ID_spat_1000_One)[idx_Group_all]<-inla_grp_Names
+      
+      for(ii in 1:length(inla_grp_Names)){
         
-        assign(paste0('idx_',ns_names[ii]),which(str_detect(rownames(ID_spat_1000_One),ns_names[ii])))
+        assign(paste0('idx_',inla_grp_Names[ii]),which(str_detect(rownames(ID_spat_1000_One),inla_grp_Names[ii])))
         
       }
+      
+      rownames(ID_spat_1000_One)[get(paste0('idx_',inla_grp_Names[1]))]
+      
       
       ID_spat_1000<-foreach(aa=1:Nsamples,.combine =cbind)%do%as.numeric(post_Samples[[aa]]$latent[idx_spat])
       dim(ID_spat_1000)
@@ -83,11 +85,11 @@ if(Save_weights){
       
       Int_1000<-foreach(aa=1:Nsamples,.combine =cbind)%do%as.numeric(post_Samples[[aa]]$latent[idx_Int])
       
-      for(ii in 1:length(ns_names)){
+      for(ii in 1:length(inla_grp_Names)){
         
-        idx_Now<-which(str_detect(rownames(ID_spat_1000_One),ns_names[ii]))
+        idx_Now<-which(str_detect(rownames(ID_spat_1000_One),inla_grp_Names[ii]))
         Val_1000<-foreach(aa=1:Nsamples,.combine =cbind)%do%as.numeric(post_Samples[[aa]]$latent[idx_Now])
-        assign(paste0(ns_names[ii],'_1000'),Val_1000)
+        assign(paste0(inla_grp_Names[ii],'_1000'),Val_1000)
         gc()
       }
       
@@ -139,8 +141,8 @@ if(Save_weights){
         
         ##link to 
         
-        Coeffs_string<-paste0(ns_names,"_coeffs=",paste0(ns_names,'_1000[,tt]'),collapse=',')
-        Coeffs_ns<-paste0(ns_names,"_coeffs",collapse=',')
+        Coeffs_string<-paste0(inla_grp_Names,"_coeffs=",paste0(inla_grp_Names,'_1000[,tt]'),collapse=',')
+        Coeffs_rw<-paste0(inla_grp_Names,"_coeffs",collapse=',')
         
         coeff_mat_cmd<-glue( 'CV_data_coeffs<-Weight_ID_data |> 
             dplyr::left_join(ID_spat_effect,by=c("ID_year","ID_spat")) |> 
@@ -155,7 +157,7 @@ if(Save_weights){
         coeff_matrix_cmd<-glue( 'coeff_matrix<-CV_data_coeffs |> 
         dplyr::mutate(a=1,coefspat=1,week=1,pop_off=1) |> ',
         'dplyr::select(Intercept,coeff_spat1,Week_effect,',
-        Coeffs_ns,
+        Coeffs_rw,
         ',pop_off)|> ',
         ' as.matrix()')
         eval(parse(text=coeff_matrix_cmd))
@@ -175,7 +177,7 @@ if(Save_weights){
       
       
       
-      Obj_exp<-c("Int_1000","Weight_ID_data",paste0(ns_names,"_1000"))
+      Obj_exp<-c("Int_1000","Weight_ID_data",paste0(inla_grp_Names,"_1000"))
       
       pred_weights<-foreach(aa=1:1000,.final =abind::abind,.packages =c("dplyr","stringr","glue"),
                             .export=Obj_exp)%dopar% get_Weights(aa)
@@ -214,7 +216,7 @@ if(Save_weights){
   ## save meta data run
   
   weight_Meta_out<-list(work_CV_Weight=work_CV_Weight,
-                        ns_names=ns_names,
+                        inla_grp_Names=inla_grp_Names,
                         last_Dat_Year=last_Dat_Year)
   
   weight_meta_name<-file.path(pred_weights_pth,paste0('Pred_weights_meta.rds'))
@@ -225,6 +227,7 @@ if(Save_weights){
   
 }
 
+gc()
 #dim(pred_weights)
 
 
